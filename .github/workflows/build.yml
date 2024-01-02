@@ -1,0 +1,71 @@
+name: Build Docker Image
+
+on:
+  push:
+    paths:
+      - build.sh
+      - .github/workflows/build.yml
+  schedule:
+    - cron: '5 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+          - arch: arm64
+    outputs:
+      PHPSTAN_VERSION: ${{ steps.PHPSTAN_VERSION.outputs.PHPSTAN_VERSION }}
+    steps:
+      - name: Clone
+        uses: actions/checkout@v4
+
+      - name: Install Chisel
+        uses: shyim/chisel-installer@main
+
+      - name: Login into Docker Hub
+        run: echo "${{ secrets.DOCKER_HUB_PAT }}" | docker login -u shyim --password-stdin
+
+      - name: Get latest PHPStan version
+        id: PHPSTAN_VERSION
+        run: |
+          VERSION=$(curl https://api.github.com/repos/phpstan/phpstan/releases/latest | jq '.tag_name' -r)
+          echo "PHPSTAN_VERSION=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "PHPSTAN_VERSION=${VERSION}" >> "$GITHUB_ENV"
+
+      - name: Build image
+        run: ./build.sh $PHPSTAN_VERSION ${{ matrix.arch }} --push
+  merge:
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install Regctl
+        uses: iarekylew00t/regctl-installer@v1
+
+      - name: Login into Github Docker Registery
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Login into Docker Hub
+        run: echo "${{ secrets.DOCKER_HUB_PAT }}" | docker login -u shyim --password-stdin
+
+      - name: Get Version from previous JOB
+        run: echo "PHPSTAN_VERSION=${{ needs.build.outputs.PHPSTAN_VERSION }}" >> "$GITHUB_ENV"
+
+      - run: docker manifest create shyim/phpstan:${PHPSTAN_VERSION} --amend shyim/phpstan:${PHPSTAN_VERSION}-amd64 --amend shyim/phpstan:${PHPSTAN_VERSION}-arm64
+
+      - run: docker manifest create shyim/phpstan:latest --amend shyim/phpstan:${PHPSTAN_VERSION}-amd64 --amend shyim/phpstan:${PHPSTAN_VERSION}-arm64
+
+      - run: docker manifest push shyim/phpstan:${PHPSTAN_VERSION}
+
+      - run: docker manifest push shyim/phpstan:latest
+
+      - run: regctl image copy shyim/phpstan:${PHPSTAN_VERSION} ghcr.io/shyim/phpstan:${PHPSTAN_VERSION}
+
+      - run: regctl image copy shyim/phpstan:latest ghcr.io/shyim/phpstan:latest
